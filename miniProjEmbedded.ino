@@ -1,18 +1,24 @@
 #include <Stepper.h>
 #include <WiFi.h>
+#include <WiFiMulti.h>
 #include <MQTT.h>
+#include <Ticker.h>
 
 // --- Hardware Objects ---
 WiFiClient net;
 MQTTClient client;
+WiFiMulti wifiMulti;
 const int stepsPerRev = 2048;  
 // ลำดับขา IN1, IN3, IN2, IN4 (19, 5, 18, 17)
 Stepper myStepper(stepsPerRev, 19, 5, 18, 17); 
+Ticker blinker;
 
 // ------ WiFi ------
-const char ssid[] = "@JumboPlusIoT";
-//const char ssid[] = "JumboPlus_DormIoT";
-const char password[] = "rebplhzu";
+const char* WIFI_SSID_1 = "@JumboPlusIoT";
+const char* WIFI_PASS_1 = "rebplhzu";
+
+const char* WIFI_SSID_2 = "JumboPlus_DormIoT";
+const char* WIFI_PASS_2 = "rebplhzu";
 
 // ----- MQTT Setting -----
 const char mqtt_broker[] = "test.mosquitto.org";
@@ -20,6 +26,7 @@ const int mqtt_port = 1883;
 const char mqtt_client_id[] = "natpakan_bin_15099"; // แก้ ID ให้ unique
 const char mqtt_topic_cmd[] = "group33/command";
 const char mqtt_topic_status[] = "group33/status";
+const char mqtt_topic_distance[] = "group33/distance"; // ส่งค่าระยะทางไปที่ dashboard
 
 // ----- Setting PIN -----
 const int trigPin = 23;
@@ -36,6 +43,7 @@ unsigned long prevMillis = 0;
 const long waitInterval = 3000; 
 bool isWaitingToClose = false; 
 unsigned long lastCountTime = 0;
+unsigned long lastDistance = 0; // หน่วงเวลาค่า distance
 
 // --- Sensor Settings ---
 const int numReadings = 10;
@@ -83,30 +91,29 @@ void messageReceived(String &topic, String &payload){
 
 // ----- Connect Function (รวม WiFi + MQTT) ----------------------------
 void connect() {
+  blinker.attach(0.5, tick);
   // 1. เช็ค WiFi
   Serial.print("Checking WiFi...");
-  while (WiFi.status() != WL_CONNECTED) {
+  setColor(255, 255, 0);
+  while (wifiMulti.run() != WL_CONNECTED) {
     Serial.print(".");
-    setColor(255, 255, 0);
-    delay(250);
-    setColor(0, 0, 0);
-    delay(250);
+    delay(500);
   }
   Serial.println("\nWiFi Connected!");
+  Serial.print("Connected to: "); // บอกชื่อ WiFi ที่เชื่อมอยู่
+  Serial.println(WiFi.SSID());
 
   // 2. เช็ค MQTT
   Serial.print("Connecting MQTT...");
+  //setColor(255, 255, 0);
   // วนลูปเชื่อมต่อ MQTT
   while (!client.connect(mqtt_client_id)) {
     Serial.print(".");
-    setColor(255, 255, 0);
-    delay(250);
-    setColor(0, 0, 0);
-    delay(250);
+    delay(500);
   }
   Serial.println("\nMQTT Connected!");
-
-  setColor(255, 165, 0); // ส้ม RGB
+  blinker.detach();
+  setColor(0, 255, 0); // Green RGB
 
   // Subscribe รอฟังคำสั่ง
   client.subscribe(mqtt_topic_cmd);
@@ -115,9 +122,20 @@ void connect() {
 
 // ---------------- Set Colors ----------------------------------------------
   void setColor(int r, int g, int b){
-    analogWrite(RGB_RED_PIN, 255 - r);
-    analogWrite(RGB_GREEN_PIN, 255 - g);
-    analogWrite(RGB_BLUE_PIN, 255 - b);
+    analogWrite(RGB_RED_PIN, r);
+    analogWrite(RGB_GREEN_PIN, g);
+    analogWrite(RGB_BLUE_PIN, b);
+  }
+
+  bool isLedOn = false;
+  void tick() {
+    if (isLedOn) {
+      setColor(0, 0, 0); // ดับ
+      isLedOn = false;
+    } else {
+      setColor(255, 255, 0); // ติด (สีเหลือง)
+      isLedOn = true;
+    }
   }
 
 // --------------------------------------------------------------------------
@@ -140,10 +158,15 @@ void setup() {
   for (int i = 0; i < numReadings; i++) readings[i] = 999; // แก้การทำงานในครั้งแรก
   total = 999 * numReadings;
 
+  Serial.println("Booting System...");
+  setColor(255, 255, 255);
+  delay(3000);
+  setColor(0, 0, 0);
+
   // WiFi Setup
-  WiFi.begin(ssid, password);
+  wifiMulti.addAP(WIFI_SSID_1, WIFI_PASS_1); // เพิ่มชื่อที่ 1
+  wifiMulti.addAP(WIFI_SSID_2, WIFI_PASS_2); // เพิ่มชื่อที่ 2
   
-  // *** MQTT Setup (ที่เคยหายไป ใส่กลับมาแล้วครับ) ***
   client.begin(mqtt_broker, mqtt_port, net);
   client.onMessage(messageReceived); // ผูกฟังก์ชัน callback
 
@@ -161,7 +184,7 @@ void loop() {
   // ถ้าเน็ตหลุด ให้ต่อใหม่
   if(!client.connected()){
     setColor(255, 0, 0);
-    connect(); // แก้คำผิด connnect -> connect เรียบร้อย
+    connect();
   }
 
   // Millis()
@@ -186,6 +209,12 @@ void loop() {
   total = total + readings[readIndex];
   readIndex = (readIndex + 1) % numReadings;
   averageDistance = total / numReadings;
+
+  if(currentMillis - lastDistance >= 500){
+    lastDistance = currentMillis;
+    // Convert float to String
+    client.publish(mqtt_topic_distance, String(averageDistance));
+  }
 
   // --- 2. Logic Control ---
   
