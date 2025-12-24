@@ -10,7 +10,8 @@ const int stepsPerRev = 2048;
 Stepper myStepper(stepsPerRev, 19, 5, 18, 17); 
 
 // ------ WiFi ------
-const char ssid[] = "@JumboPlusIoT";
+//const char ssid[] = "@JumboPlusIoT";
+const char ssid[] = "JumboPlus_DormIoT";
 const char password[] = "rebplhzu";
 
 // ----- MQTT Setting -----
@@ -38,6 +39,14 @@ int readIndex = 0;
 float total = 0;
 float averageDistance = 0;
 
+// ------ Stop coil Function ----- (กันมอเตอร์ร้อน และช่วยประหยัดพลังงาน)
+void stopCoils(){
+  digitalWrite(19, LOW);
+  digitalWrite(5, LOW);
+  digitalWrite(18, LOW);
+  digitalWrite(17, LOW);
+}
+
 // ----- Function MQTT Dashboard ----------------------------------------
 void messageReceived(String &topic, String &payload){
   Serial.println("Incoming: "+topic+" - "+ payload);
@@ -46,19 +55,20 @@ void messageReceived(String &topic, String &payload){
     if(!isOpen){
       Serial.println("Command: OPEN");
       digitalWrite(ledPin, HIGH);
+      client.publish(mqtt_topic_status, "OPEN BY DASHBOARD");
       myStepper.step(stepsPerRev / 4);
       isOpen = true;
       isWaitingToClose = false;
-      client.publish(mqtt_topic_status, "OPEN BY DASHBOARD");
     }
   }else if(payload == "off"){
     if(isOpen){
       Serial.println("Command: CLOSE");
+      client.publish(mqtt_topic_status, "CLOSE BY DASHBOARD");
       myStepper.step(-stepsPerRev / 4);
+      stopCoils();
       digitalWrite(ledPin, LOW);
       isOpen = false;
       isWaitingToClose = false;
-      client.publish(mqtt_topic_status, "CLOSE BY DASHBOARD");
     }
   }
 }
@@ -149,13 +159,16 @@ void loop() {
   // --- 2. Logic Control ---
   
   // เปิด: ระยะเฉลี่ยน้อยกว่า 10 ซม.
+  // Auto Open
   if (averageDistance > 0 && averageDistance < 10) {
     if(!isOpen){
       Serial.println("Action: AUTO OPEN");
-      digitalWrite(ledPin, HIGH);      
+      digitalWrite(ledPin, HIGH); 
+      client.publish(mqtt_topic_status, "AUTO OPEN"); // ส่งค่าไปที่ dashboard ก่อนเพื่อแก้ความหน่วงที่เกิดขึ้น   
       myStepper.step(stepsPerRev / 4); 
+      stopCoils();
       isOpen = true;
-      client.publish(mqtt_topic_status, "AUTO OPEN");
+      
     }
     isWaitingToClose = false;
   } 
@@ -169,12 +182,13 @@ void loop() {
     }
     if(isWaitingToClose && (currentMillis - prevMillis >= waitInterval)){
       Serial.println("Action: AUTO CLOSE");
+      client.publish(mqtt_topic_status, "AUTO CLOSE");
       myStepper.step(-stepsPerRev / 4); 
+      stopCoils();
       digitalWrite(ledPin, LOW);       
-      
       isOpen = false;
       isWaitingToClose = false;
-      client.publish(mqtt_topic_status, "AUTO CLOSE");
+      
     }
   }
   delay(10);
