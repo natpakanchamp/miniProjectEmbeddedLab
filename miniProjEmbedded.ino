@@ -10,8 +10,8 @@ const int stepsPerRev = 2048;
 Stepper myStepper(stepsPerRev, 19, 5, 18, 17); 
 
 // ------ WiFi ------
-//const char ssid[] = "@JumboPlusIoT";
-const char ssid[] = "JumboPlus_DormIoT";
+const char ssid[] = "@JumboPlusIoT";
+//const char ssid[] = "JumboPlus_DormIoT";
 const char password[] = "rebplhzu";
 
 // ----- MQTT Setting -----
@@ -24,13 +24,18 @@ const char mqtt_topic_status[] = "group33/status";
 // ----- Setting PIN -----
 const int trigPin = 23;
 const int echoPin = 22;
-const int ledPin = 21; 
+const int ledPin = 21;
+
+const int RGB_RED_PIN = 25;      // R
+const int RGB_GREEN_PIN = 26;    // G
+const int RGB_BLUE_PIN = 27;     // B
 
 // ----- Variable -----
 bool isOpen = false;
 unsigned long prevMillis = 0;
 const long waitInterval = 3000; 
 bool isWaitingToClose = false; 
+unsigned long lastCountTime = 0;
 
 // --- Sensor Settings ---
 const int numReadings = 10;
@@ -56,7 +61,9 @@ void messageReceived(String &topic, String &payload){
       Serial.println("Command: OPEN");
       digitalWrite(ledPin, HIGH);
       client.publish(mqtt_topic_status, "OPEN BY DASHBOARD");
+      setColor(0, 0, 255);
       myStepper.step(stepsPerRev / 4);
+      stopCoils();
       isOpen = true;
       isWaitingToClose = false;
     }
@@ -64,8 +71,9 @@ void messageReceived(String &topic, String &payload){
     if(isOpen){
       Serial.println("Command: CLOSE");
       client.publish(mqtt_topic_status, "CLOSE BY DASHBOARD");
-      myStepper.step(-stepsPerRev / 4);
+      myStepper.step((-stepsPerRev / 4) - 100); // motor จะหมุนมากกว่าปกติเล็กน้อย เพื่อให้มั่นใจว่าปิดสนิท
       stopCoils();
+      setColor(0, 255, 0);
       digitalWrite(ledPin, LOW);
       isOpen = false;
       isWaitingToClose = false;
@@ -79,7 +87,10 @@ void connect() {
   Serial.print("Checking WiFi...");
   while (WiFi.status() != WL_CONNECTED) {
     Serial.print(".");
-    delay(1000);
+    setColor(255, 255, 0);
+    delay(250);
+    setColor(0, 0, 0);
+    delay(250);
   }
   Serial.println("\nWiFi Connected!");
 
@@ -88,14 +99,26 @@ void connect() {
   // วนลูปเชื่อมต่อ MQTT
   while (!client.connect(mqtt_client_id)) {
     Serial.print(".");
-    delay(1000);
+    setColor(255, 255, 0);
+    delay(250);
+    setColor(0, 0, 0);
+    delay(250);
   }
   Serial.println("\nMQTT Connected!");
+
+  setColor(255, 165, 0); // ส้ม RGB
 
   // Subscribe รอฟังคำสั่ง
   client.subscribe(mqtt_topic_cmd);
   client.publish(mqtt_topic_status, "SYSTEM READY");
 }
+
+// ---------------- Set Colors ----------------------------------------------
+  void setColor(int r, int g, int b){
+    analogWrite(RGB_RED_PIN, 255 - r);
+    analogWrite(RGB_GREEN_PIN, 255 - g);
+    analogWrite(RGB_BLUE_PIN, 255 - b);
+  }
 
 // --------------------------------------------------------------------------
 void setup() {
@@ -105,11 +128,18 @@ void setup() {
   pinMode(trigPin, OUTPUT);
   pinMode(echoPin, INPUT);
   pinMode(ledPin, OUTPUT);
+
+  //---RGB---
+  pinMode(RGB_RED_PIN, OUTPUT);
+  pinMode(RGB_GREEN_PIN, OUTPUT);
+  pinMode(RGB_BLUE_PIN, OUTPUT);
+
   digitalWrite(ledPin, LOW); 
   myStepper.setSpeed(12);    
   
-  for (int i = 0; i < numReadings; i++) readings[i] = 0;
-  
+  for (int i = 0; i < numReadings; i++) readings[i] = 999; // แก้การทำงานในครั้งแรก
+  total = 999 * numReadings;
+
   // WiFi Setup
   WiFi.begin(ssid, password);
   
@@ -130,6 +160,7 @@ void loop() {
 
   // ถ้าเน็ตหลุด ให้ต่อใหม่
   if(!client.connected()){
+    setColor(255, 0, 0);
     connect(); // แก้คำผิด connnect -> connect เรียบร้อย
   }
 
@@ -165,30 +196,46 @@ void loop() {
       Serial.println("Action: AUTO OPEN");
       digitalWrite(ledPin, HIGH); 
       client.publish(mqtt_topic_status, "AUTO OPEN"); // ส่งค่าไปที่ dashboard ก่อนเพื่อแก้ความหน่วงที่เกิดขึ้น   
+      setColor(0, 0, 255); // RGB สีน้ำเงิน (เปิด)
       myStepper.step(stepsPerRev / 4); 
       stopCoils();
       isOpen = true;
-      
     }
-    isWaitingToClose = false;
+    if(isOpen){
+      setColor(0, 0, 255); // Blue RGB
+      isWaitingToClose = false;
+    }
   } 
   
   // ปิด: ระยะเฉลี่ยมากกว่า 20 ซม.
+  // Auto Close
   else if (averageDistance > 20 && isOpen) {
     if(!isWaitingToClose){
       prevMillis = currentMillis;
       isWaitingToClose = true;
-      Serial.println("Closing in 3s...");
+      Serial.println("Waiting...");
+      setColor(128, 0, 128); // RGB สีม่วง (เริ่มนับถอยหลัง)
     }
-    if(isWaitingToClose && (currentMillis - prevMillis >= waitInterval)){
-      Serial.println("Action: AUTO CLOSE");
-      client.publish(mqtt_topic_status, "AUTO CLOSE");
-      myStepper.step(-stepsPerRev / 4); 
-      stopCoils();
-      digitalWrite(ledPin, LOW);       
-      isOpen = false;
-      isWaitingToClose = false;
-      
+    if(isWaitingToClose){
+      long remaining = waitInterval - (currentMillis - prevMillis);
+      if(currentMillis - lastCountTime >= 1000){
+        lastCountTime = currentMillis;
+        int secondsLeft = ((remaining -1) / 1000)+1; // +1
+        Serial.print("Closing in ");
+        Serial.print(secondsLeft);
+        Serial.println("s...");
+      }
+      if(remaining <= 0){
+        Serial.println("Action: AUTO CLOSE");
+        client.publish(mqtt_topic_status, "AUTO CLOSE");
+        setColor(255, 0, 0); // Red RGB Closing...
+        myStepper.step((-stepsPerRev / 4) -100); // motor จะหมุนมากกว่าปกติเล็กน้อยเพื่อให้มั่นใจว่าจะปิดสนิท 
+        stopCoils();
+        digitalWrite(ledPin, LOW);  
+        setColor(0, 255, 0); // Green RGB (Ready)
+        isOpen = false;
+        isWaitingToClose = false;
+      }
     }
   }
   delay(10);
