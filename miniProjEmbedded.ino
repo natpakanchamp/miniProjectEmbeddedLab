@@ -23,15 +23,18 @@ const char* WIFI_PASS_2 = "rebplhzu";
 // ----- MQTT Setting -----
 const char mqtt_broker[] = "test.mosquitto.org";
 const int mqtt_port = 1883; 
-const char mqtt_client_id[] = "natpakan_bin_15099"; // แก้ ID ให้ unique
+const char mqtt_client_id[] = "1509966490870"; // แก้ ID ให้ unique
 const char mqtt_topic_cmd[] = "group33/command";
 const char mqtt_topic_status[] = "group33/status";
 const char mqtt_topic_distance[] = "group33/distance"; // ส่งค่าระยะทางไปที่ dashboard
+const char mqtt_topic_light[] = "group33/light";
 
 // ----- Setting PIN -----
 const int trigPin = 23;
 const int echoPin = 22;
-const int ledPin = 21;
+const int transistor_1_Pin = 21;
+const int transistor_2_Pin = 16;
+const int ldrPin = 34;
 
 const int RGB_RED_PIN = 25;      // R
 const int RGB_GREEN_PIN = 26;    // G
@@ -44,6 +47,7 @@ const long waitInterval = 3000;
 bool isWaitingToClose = false; 
 unsigned long lastCountTime = 0;
 unsigned long lastDistance = 0; // หน่วงเวลาค่า distance
+unsigned long lastLightTime = 0;
 
 // --- Sensor Settings ---
 const int numReadings = 10;
@@ -67,7 +71,15 @@ void messageReceived(String &topic, String &payload){
   if(payload == "on"){
     if(!isOpen){
       Serial.println("Command: OPEN");
-      digitalWrite(ledPin, HIGH);
+
+      int currentLight = analogRead(ldrPin);
+      digitalWrite(transistor_1_Pin, HIGH);
+      if(currentLight < 1000){
+        digitalWrite(transistor_2_Pin, HIGH); // มืด -> เปิดตัวเสริมทันที
+      } else if(currentLight > 1500){
+        digitalWrite(transistor_2_Pin, LOW);  // สว่าง -> ปิดตัวเสริมไว้
+      }
+
       client.publish(mqtt_topic_status, "OPEN BY DASHBOARD");
       setColor(0, 0, 255);
       myStepper.step(stepsPerRev / 4);
@@ -82,7 +94,8 @@ void messageReceived(String &topic, String &payload){
       myStepper.step((-stepsPerRev / 4) - 100); // motor จะหมุนมากกว่าปกติเล็กน้อย เพื่อให้มั่นใจว่าปิดสนิท
       stopCoils();
       setColor(0, 255, 0);
-      digitalWrite(ledPin, LOW);
+      digitalWrite(transistor_1_Pin, LOW);
+      digitalWrite(transistor_2_Pin, LOW);
       isOpen = false;
       isWaitingToClose = false;
     }
@@ -145,14 +158,16 @@ void setup() {
   // Hardware Setup
   pinMode(trigPin, OUTPUT);
   pinMode(echoPin, INPUT);
-  pinMode(ledPin, OUTPUT);
+  pinMode(transistor_1_Pin, OUTPUT);
+  pinMode(transistor_2_Pin, OUTPUT);
 
   //---RGB---
   pinMode(RGB_RED_PIN, OUTPUT);
   pinMode(RGB_GREEN_PIN, OUTPUT);
   pinMode(RGB_BLUE_PIN, OUTPUT);
 
-  digitalWrite(ledPin, LOW); 
+  digitalWrite(transistor_1_Pin, LOW); 
+  digitalWrite(transistor_2_Pin, LOW);
   myStepper.setSpeed(12);    
   
   for (int i = 0; i < numReadings; i++) readings[i] = 999; // แก้การทำงานในครั้งแรก
@@ -216,6 +231,28 @@ void loop() {
     client.publish(mqtt_topic_distance, String(averageDistance));
   }
 
+  // ----- LDR & Transistor Logic -----
+  int lightValue = analogRead(ldrPin);
+  // ----- ส่งค่าแสงทุก 1 วิ
+  if(currentMillis - lastLightTime >= 1000){ // <--
+    lastLightTime = currentMillis;
+    client.publish(mqtt_topic_light, String(lightValue));
+  }
+
+  // ----- Transistor Control -----
+  if(isOpen){
+    digitalWrite(transistor_1_Pin, HIGH);
+    if(lightValue < 1000){
+      digitalWrite(transistor_2_Pin, HIGH);
+    }else if(lightValue > 1500){
+      digitalWrite(transistor_2_Pin, LOW);
+    }
+   }else{
+    digitalWrite(transistor_1_Pin, LOW);
+    digitalWrite(transistor_2_Pin, LOW);
+  }
+  
+
   // --- 2. Logic Control ---
   
   // เปิด: ระยะเฉลี่ยน้อยกว่า 10 ซม.
@@ -223,7 +260,14 @@ void loop() {
   if (averageDistance > 0 && averageDistance < 10) {
     if(!isOpen){
       Serial.println("Action: AUTO OPEN");
-      digitalWrite(ledPin, HIGH); 
+
+      digitalWrite(transistor_1_Pin, HIGH); 
+      // Hysteresis
+      if(lightValue < 1000){
+         digitalWrite(transistor_2_Pin, HIGH);
+      } else if(lightValue > 1500){
+         digitalWrite(transistor_2_Pin, LOW);
+      }
       client.publish(mqtt_topic_status, "AUTO OPEN"); // ส่งค่าไปที่ dashboard ก่อนเพื่อแก้ความหน่วงที่เกิดขึ้น   
       setColor(0, 0, 255); // RGB สีน้ำเงิน (เปิด)
       myStepper.step(stepsPerRev / 4); 
@@ -260,7 +304,7 @@ void loop() {
         setColor(255, 0, 0); // Red RGB Closing...
         myStepper.step((-stepsPerRev / 4) -100); // motor จะหมุนมากกว่าปกติเล็กน้อยเพื่อให้มั่นใจว่าจะปิดสนิท 
         stopCoils();
-        digitalWrite(ledPin, LOW);  
+        digitalWrite(transistor_1_Pin, LOW);  
         setColor(0, 255, 0); // Green RGB (Ready)
         isOpen = false;
         isWaitingToClose = false;
